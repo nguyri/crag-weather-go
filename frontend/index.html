@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bow Valley Crag Weather Tracker</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style> #map { height: 500px; } </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-6">
+
+    <div class="max-w-6xl mx-auto">
+        <header class="mb-6">
+            <h1 class="text-3xl font-bold text-emerald-400">⛰️ Crag Weather Monitor</h1>
+            <p class="text-slate-400">Moose Mountain & Bow Valley Bounding Box</p>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="md:col-span-2 bg-slate-800 p-4 rounded-xl shadow-lg border border-slate-700">
+                <h2 class="text-lg font-semibold mb-3">Geospatial Bounding Box</h2>
+                <div id="map" class="rounded-lg"></div>
+            </div>
+
+            <div class="bg-slate-800 p-6 rounded-xl shadow-lg border border-slate-700 flex flex-col justify-between">
+                <div>
+                    <h2 class="text-lg font-semibold mb-4 text-emerald-400 border-b border-slate-700 pb-2">Live Weather Metrics</h2>
+                    <div id="weather-info" class="space-y-4">
+                        <p class="text-slate-400 italic">Click "Fetch Current Weather" to pull data...</p>
+                    </div>
+                </div>
+                
+                <button onclick="fetchWeather()" class="w-full mt-6 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-bold py-3 px-4 rounded-lg transition dynamic-shadow cursor-pointer">
+                    Fetch Current Weather
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize the single global instance on the window object
+        window.map = L.map('map').setView([50.885, -114.775], 11);
+
+        // Global Layer Group dedicated purely to dynamic marker additions
+        const stationMarkerGroup = L.layerGroup().addTo(window.map);
+
+        // 
+        async function loadMapConfig() {
+            const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+            
+            // 1. Fetch the "Source of Truth" from your Go backend
+            let bboxBounds = [[50.85, -114.82], [50.92, -114.73]]; // Default fallback
+            
+            try {
+                const response = await fetch('http://localhost:8080/api/config');
+                const data = await response.json();
+                
+                if (data.bbox) {
+                    const b = data.bbox;
+                    // Map the API response to Leaflet's [[lat, lon], [lat, lon]] format
+                    bboxBounds = [[b.min_lat, b.min_lon], [b.max_lat, b.max_lon]];
+                }
+            } catch (err) {
+                console.warn("Could not fetch config, using defaults:", err);
+            }
+
+            // 2. Initialize Map
+            L.tileLayer(tileUrl, {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(window.map);
+
+            // 3. Draw and Zoom
+            L.rectangle(bboxBounds, {
+                color: "#f43f5e", 
+                weight: 2, 
+                fillColor: "#f43f5e", 
+                fillOpacity: 0.15
+            }).addTo(window.map);
+
+            window.map.fitBounds(bboxBounds);
+        }
+
+        // Run map setup initialization
+        loadMapConfig();
+
+        // 3. Dynamic Weather Fetcher
+        async function fetchWeather() {
+            const container = document.getElementById('weather-info');
+            container.innerHTML = `<p class="text-emerald-400 animate-pulse">Querying Environment Canada stations...</p>`;
+            
+            // Safely clears only our icons, completely isolated from our base map tiling layer
+            stationMarkerGroup.clearLayers();
+            
+            try {
+                const response = await fetch('http://localhost:8080/api/weather/bow-valley');
+                const stations = await response.json();
+                
+                if (!stations || stations.length === 0 || stations.error) {
+                    container.innerHTML = `<p class="text-rose-400">Error: No regional stations reporting data right now.</p>`;
+                    return;
+                }
+
+                container.innerHTML = `<div class="space-y-6"></div>`;
+                const listWrapper = container.firstChild;
+
+                stations.forEach((station, index) => {
+                    if (station.latitude && station.longitude) {
+                        // Adds directly to the marker sub-group layer
+                        const marker = L.marker([station.latitude, station.longitude])
+                            .bindPopup(`<b>${station.station_name || "Unknown Station"}</b><br>Temp: ${station.temperature_celsius}°C`)
+                            .addTo(stationMarkerGroup); 
+                        
+                        if (index === 0) marker.openPopup();
+                    }
+
+                    const stationCard = document.createElement('div');
+                    stationCard.className = "border-b border-slate-700/50 pb-4 last:border-none";
+                    stationCard.innerHTML = `
+                        <div>
+                            <span class="text-xs text-emerald-400 block uppercase font-bold tracking-wider">Station</span>
+                            <span class="text-md font-semibold text-slate-100">${station.station_name || "Unknown Station"}</span>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 pt-2 text-center">
+                            <div class="bg-slate-700/30 p-2 rounded">
+                                <span class="text-[10px] text-slate-400 block">Temp</span>
+                                <span class="text-sm font-bold text-orange-400">${station.temperature_celsius}°C</span>
+                            </div>
+                            <div class="bg-slate-700/30 p-2 rounded">
+                                <span class="text-[10px] text-slate-400 block">Humid</span>
+                                <span class="text-sm font-bold text-blue-400">${station.humidity_percent}%</span>
+                            </div>
+                            <div class="bg-slate-700/30 p-2 rounded">
+                                <span class="text-[10px] text-slate-400 block">Wind</span>
+                                <span class="text-sm font-bold text-slate-300">${station.wind_speed_kmh}k/h</span>
+                            </div>
+                        </div>
+                    `;
+                    listWrapper.appendChild(stationCard);
+                });
+
+            } catch (err) {
+                container.innerHTML = `<p class="text-rose-400">Could not communicate with local proxy server.</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

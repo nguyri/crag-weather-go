@@ -6,43 +6,41 @@ import (
 	"net/http"
 )
 
-// WeatherCondition is our universal internal layout.
-// Every provider must convert its unique data into this unified struct.
 type WeatherCondition struct {
 	StationName string  `json:"station_name"`
 	Temperature float64 `json:"temperature_celsius"`
 	Humidity    float64 `json:"humidity_percent"`
 	WindSpeed   float64 `json:"wind_speed_kmh"`
+	WindDir     float64 `json:"wind_direction"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
 }
 
-// WeatherProvider defines the contract that any weather service must follow.
 type WeatherProvider interface {
-	FetchWeather(bbox string) (*WeatherCondition, error)
+	FetchWeather(bbox string) ([]WeatherCondition, error)
 }
-
-// ============================================================================
-// ENVIRONMENT CANADA (ECCC) IMPLEMENTATION
-// ============================================================================
 
 type ECCCProvider struct {
 	Client *http.Client
 }
 
-// The raw external JSON schema unique to MSC GeoMet
 type ecccRawResponse struct {
 	Features []struct {
+		Geometry struct {
+			Coordinates []float64 `json:"coordinates"`
+		} `json:"geometry"`
 		Properties struct {
 			StationName string  `json:"stn_nam-value"`
 			AirTemp     float64 `json:"air_temp"`
 			RelHum      float64 `json:"rel_hum"`
 			WindSpd     float64 `json:"avg_wnd_spd_10m_pst1hr"`
-			WindDir     float64 `json:"avg_wnd_dir_10m_pst10mts`
+			WindDir     float64 `json:"avg_wnd_dir_10m_pst10mts"`
 		} `json:"properties"`
 	} `json:"features"`
 }
 
-func (e *ECCCProvider) FetchWeather(bbox string) (*WeatherCondition, error) {
-	u := fmt.Sprintf("https://api.weather.gc.ca/collections/swob-realtime/items?bbox=%s&limit=1&f=json", bbox)
+func (e *ECCCProvider) FetchWeather(bbox string) ([]WeatherCondition, error) {
+	u := fmt.Sprintf("https://api.weather.gc.ca/collections/swob-realtime/items?bbox=%s&limit=5&f=json", bbox)
 
 	req, err := http.NewRequest("GET", u, nil)
 	if err != nil {
@@ -65,16 +63,42 @@ func (e *ECCCProvider) FetchWeather(bbox string) (*WeatherCondition, error) {
 		return nil, err
 	}
 
-	if len(raw.Features) == 0 {
-		return nil, fmt.Errorf("no weather station features found in bounding box")
+	// Use a map to ensure we only keep one entry per unique station name
+	latestStations := make(map[string]WeatherCondition)
+
+	for _, feature := range raw.Features {
+		props := feature.Properties
+		name := props.StationName
+
+		// Skip if we already have this station (prevents duplicate time-series entries)
+		if _, exists := latestStations[name]; exists {
+			continue
+		}
+
+		coords := feature.Geometry.Coordinates
+		lon, lat := 0.0, 0.0
+		if len(coords) >= 2 {
+			lon = coords[0]
+			lat = coords[1]
+		}
+
+		// Add to map
+		latestStations[name] = WeatherCondition{
+			StationName: name,
+			Temperature: props.AirTemp,
+			Humidity:    props.RelHum,
+			WindSpeed:   props.WindSpd,
+			WindDir:     props.WindDir,
+			Latitude:    lat,
+			Longitude:   lon,
+		}
 	}
 
-	// Map raw data seamlessly to our standard internal format
-	props := raw.Features[0].Properties
-	return &WeatherCondition{
-		StationName: props.StationName,
-		Temperature: props.AirTemp,
-		Humidity:    props.RelHum,
-		WindSpeed:   props.WindSpd,
-	}, nil
+	// Convert the map back into a slice to return
+	var finalConditions []WeatherCondition
+	for _, cond := range latestStations {
+		finalConditions = append(finalConditions, cond)
+	}
+
+	return finalConditions, nil
 }
